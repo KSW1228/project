@@ -1,0 +1,70 @@
+---
+# ===========================================================
+#  dovecot 설치 + 설정 (PDF 6.1: Dovecot 설정 변경)
+#  - 수신함(메일 읽기) IMAP/POP3. 143/110 포트.
+# ===========================================================
+
+- name: Install dovecot
+  dnf:
+    name: dovecot
+    state: present
+
+# ── dovecot.conf: protocols 활성화 ──
+#   PDF 24/30/33행 주석 제거 → protocols, listen 설정
+- name: Enable protocols in dovecot.conf
+  lineinfile:
+    path: /etc/dovecot/dovecot.conf
+    regexp: '^\s*#?\s*protocols\s*='
+    line: "protocols = imap pop3 lmtp"
+    state: present
+  notify: restart dovecot
+
+- name: Set listen in dovecot.conf
+  lineinfile:
+    path: /etc/dovecot/dovecot.conf
+    regexp: '^\s*#?\s*listen\s*='
+    line: "listen = *, ::"
+    state: present
+  notify: restart dovecot
+
+# ── 10-ssl.conf: ssl = yes (PDF 8행) ──
+- name: Enable ssl in 10-ssl.conf
+  lineinfile:
+    path: /etc/dovecot/conf.d/10-ssl.conf
+    regexp: '^\s*#?\s*ssl\s*='
+    line: "ssl = yes"
+    state: present
+  notify: restart dovecot
+
+# ── 10-mail.conf: mail_location (PDF 25행 주석 해제) ──
+- name: Set mail_location in 10-mail.conf
+  lineinfile:
+    path: /etc/dovecot/conf.d/10-mail.conf
+    regexp: '^\s*#?\s*mail_location\s*='
+    line: "mail_location = mbox:~/mail:INBOX=/var/mail/%u"
+    state: present
+  notify: restart dovecot
+
+# ── 10-mail.conf: mail_access_groups = mail (PDF 121행 주석 해제) ──
+- name: Set mail_access_groups in 10-mail.conf
+  lineinfile:
+    path: /etc/dovecot/conf.d/10-mail.conf
+    regexp: '^\s*#?\s*mail_access_groups\s*='
+    line: "mail_access_groups = mail"
+    state: present
+  notify: restart dovecot
+
+# ── 10-auth.conf: 평문 인증 허용 (roundcube/evolution 평문 로그인용) ──
+- name: Allow plaintext auth in 10-auth.conf
+  lineinfile:
+    path: /etc/dovecot/conf.d/10-auth.conf
+    regexp: '^\s*#?\s*disable_plaintext_auth\s*='
+    line: "disable_plaintext_auth = no"
+    state: present
+  notify: restart dovecot
+
+- name: Enable & start dovecot
+  service:
+    name: dovecot
+    state: started
+    enabled: yes

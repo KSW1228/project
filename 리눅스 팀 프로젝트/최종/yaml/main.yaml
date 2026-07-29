@@ -1,0 +1,170 @@
+---
+# ===========================================================
+#  FreeIPA 인프라 통합 컨트롤러 플레이북
+#
+#  ★ 폴더 구조 (서비스별로 분리):
+#     yaml/
+#     ├── ansible.cfg
+#     ├── hosts
+#     ├── main.yaml        ← 이 파일
+#     ├── ipa/             server_install, register_user, client_join
+#     ├── common/          raid_lvm (web·db·mail·nfs... 공용)
+#     ├── web/             web_install
+#     ├── db/              db_install
+#     └── dns/             dns_master, dns_slave (+ templates/)
+#
+#  태그로 부분 실행 가능:
+#    ansible-playbook main.yaml --tags prep
+#    ansible-playbook main.yaml --tags ipa_server
+#    ansible-playbook main.yaml --tags client_join
+#    ansible-playbook main.yaml --tags raid
+#    ansible-playbook main.yaml --tags raid --limit web
+#    ansible-playbook main.yaml --tags dns_install
+#  전체를 다시 돌려도 모든 task에 멱등성 가드가 있어 안전함.
+# ===========================================================
+
+# ── Play 1: 제어 노드(D)의 /etc/hosts 준비 ──
+- name: 1. Prepare /etc/hosts on control node
+  hosts: localhost
+  connection: local
+  become: yes
+  tags: prep
+  tasks:
+    - name: Configure /etc/hosts
+      copy:
+        dest: /etc/hosts
+        content: |
+          127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+          ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+          10.0.2.218 ipa.ksw.com ipa
+          {% for host in groups['ipa_clients'] | default([]) %}
+          {{ host }} {{ hostvars[host]['hostname'] }}
+          {% endfor %}
+
+# ── Play 2: FreeIPA 서버 설치 + 유저/키/sudo 등록 (원격 218) ──
+- name: 2. Install FreeIPA Server & Register Users
+  hosts: ipa
+  become: yes
+  tags: ipa_server
+  tasks:
+    - include_tasks: ipa/server_install.yaml
+    - include_tasks: ipa/register_user.yaml
+
+# ── Play 3: 클라이언트 도메인 가입 + 개인키 배포 + 보안 설정 ──
+- name: 3. Finalize Client Domain Join
+  hosts: ipa_clients
+  become: yes
+  tags: client_join
+  tasks:
+    - include_tasks: ipa/client_join.yaml
+
+# ── Play 4: web RAID1 + LVM (웹 루트 가용성) ──
+- name: 4. RAID1 + LVM for web
+  hosts: web
+  become: yes
+  tags: raid
+  tasks:
+    - include_tasks: common/raid_lvm.yaml
+
+# ── Play 4-1: db RAID1 + LVM (/var/lib/mysql 가용성) ──
+- name: 4-1. RAID1 + LVM for db
+  hosts: db
+  become: yes
+  tags: raid
+  tasks:
+    - include_tasks: common/raid_lvm.yaml
+
+# ── Play 5: db 서버 설치 ──
+- name: 5. db server install
+  hosts: db
+  become: yes
+  tags: db_install
+  tasks:
+    - include_tasks: db/db_install.yaml
+  handlers:
+    - name: restart mariadb
+      service:
+        name: mariadb
+        state: restarted
+
+# ── Play 5-1: web 서버 설치 ──
+- name: 5-1. Web server install
+  hosts: web
+  become: yes
+  tags: web_install
+  tasks:
+    - include_tasks: web/web_install.yaml
+
+# ── Play 6: DNS 마스터 (185) ──
+#   존 파일을 직접 소유. 정방향/역방향 존을 템플릿으로 생성.
+- name: 6. DNS master install
+  hosts: dns_master
+  become: yes
+  tags: dns_install
+  tasks:
+    - include_tasks: dns/dns_master.yaml
+  handlers:
+    - name: restart named
+      service:
+        name: named
+        state: restarted
+
+# ── Play 6-1: DNS 슬레이브 (web=24) ──
+#   존 파일을 직접 만들지 않고 마스터에서 트랜스퍼로 받아옴.
+- name: 6-1. DNS slave install
+  hosts: dns_slave
+  become: yes
+  tags: dns_install
+  tasks:
+    - include_tasks: dns/dns_slave.yaml
+  handlers:
+    - name: restart named
+      service:
+        name: named
+        state: restarted
+
+# ── Play 7: 메일서버 (mail1=ydy.io / mail2=igh.io) ──
+#   sendmail + dovecot + roundcube 풀세트.
+#   각 서버는 group_vars(mail1.yml/mail2.yml)의 mail_domain 으로 분기.
+#   ※ 사전조건: RAID(--tags raid) 로 /var/spool/mail 마운트 권장
+- name: 7. Mail server install (sendmail + dovecot + roundcube)
+  hosts: mail_servers
+  become: yes
+  tags: mail_install
+  tasks:
+    - include_tasks: mail/mail_install.yaml
+  handlers:
+    - name: restart postfix
+      service:
+        name: postfix
+        state: restarted
+    - name: restart dovecot
+      service:
+        name: dovecot
+        state: restarted
+    - name: restart httpd
+      service:
+        name: httpd
+        state: restarted
+
+# ── Play 8: 파일서버 (Samba + NFS) — 팀원 role 연동 (10.0.2.208) ──
+#   role 구조(roles/samba, roles/nfs)를 그대로 사용.
+#   변수는 group_vars/file_servers/{main,vault}.yml.
+#   ※ DNS·common 은 우리 것과 충돌하므로 가져오지 않음 (samba/nfs 만).
+- name: 8. File server install (Samba + NFS)
+  hosts: file_servers
+  become: yes
+  tags: file_install
+  roles:
+    - samba
+    - nfs
+
+# ── Play 9: FTP 서버 (vsftpd, anonymous) — roles/ftp (10.0.2.114) ──
+#   팀 role 스타일로 작성. 변수는 group_vars/ftp/main.yml.
+#   ※ DNS·common 미포함 (ftp role 만 단독 적용).
+- name: 9. FTP server install (vsftpd)
+  hosts: ftp
+  become: yes
+  tags: ftp_install
+  roles:
+    - ftp

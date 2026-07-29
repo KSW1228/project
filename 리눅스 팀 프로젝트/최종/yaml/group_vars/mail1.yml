@@ -1,0 +1,12 @@
+---
+# ===========================================================
+#  mail1 (10.0.2.28) — ydy.io 메일 도메인 담당
+# ===========================================================
+mail_domain: ydy.io                 # 이 서버가 받는 메일 도메인 (@ydy.io)
+mail_hostname: mail.ydy.io           # DNS 서비스 이름 (MX 가 가리키는 이름)
+roundcube_db_name: rc_ydy            # 20번 db.ksw.io 의 mail1 전용 DB
+
+# 이 서버에 만들 메일 계정 (메일 주소 = 이름@ydy.io)
+mail_users:
+  - { name: ksw, password: "1234" }    # → ksw@ydy.io
+  - { name: ydy, password: "1234" }    # → ydy@ydy.io

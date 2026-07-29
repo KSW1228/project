@@ -1,0 +1,81 @@
+---
+# ===========================================================
+#  DNS 마스터 (dns=185)
+#  - bind 설치 + 방화벽
+#  - named.conf 배포 (managed_domains 만큼 존 선언)
+#  - 도메인마다 정방향 존 파일 생성 (managed_domains 루프)
+#  - 역방향 존 1개 (모든 도메인의 IP 통합)
+#  ★ 멱등성: template 모듈은 멱등. 내용 바뀔 때만 changed.
+#            설정이 바뀐 경우에만 handler 로 named 재시작.
+# ===========================================================
+
+# ── 1. 패키지 설치 ──
+- name: install bind
+  dnf:
+    name:
+      - bind
+      - bind-utils
+    state: latest
+
+# ── 2. 방화벽 (dns=53 개방) ──
+- name: open firewall for dns
+  firewalld:
+    service: dns
+    permanent: yes
+    immediate: yes
+    state: enabled
+
+# ── 3. named.conf 배포 (마스터용, 모든 도메인 존 선언) ──
+- name: Deploy named.conf (master)
+  template:
+    src: named.conf.master.j2
+    dest: /etc/named.conf
+    owner: root
+    group: named
+    mode: '0640'
+  notify: restart named
+
+# ── 4. 도메인마다 정방향 존 파일 배포 (managed_domains 루프) ──
+#   item = 도메인 1개. domain.zone.j2 가 item 을 받아 존 1개를 만든다.
+- name: Deploy forward zone file per domain
+  template:
+    src: domain.zone.j2
+    dest: "/var/named/{{ item.name }}.zone"
+    owner: root
+    group: named
+    mode: '0640'
+  loop: "{{ managed_domains }}"
+  notify: restart named
+
+# ── 5. 역방향 존 파일 배포 (모든 도메인 IP 통합) ──
+- name: Deploy reverse zone file
+  template:
+    src: reverse.zone.j2
+    dest: "/var/named/{{ reverse_zone }}.zone"
+    owner: root
+    group: named
+    mode: '0640'
+  notify: restart named
+
+# ── 6. 정방향 존 문법 검사 (도메인마다) ──
+- name: Check forward zone syntax per domain
+  command: "named-checkzone {{ item.name }} /var/named/{{ item.name }}.zone"
+  loop: "{{ managed_domains }}"
+  changed_when: false
+
+# ── 7. 역방향 존 문법 검사 ──
+- name: Check reverse zone syntax
+  command: "named-checkzone {{ reverse_zone }} /var/named/{{ reverse_zone }}.zone"
+  changed_when: false
+
+# ── 8. named.conf 문법 검사 ──
+- name: Check named.conf syntax
+  command: named-checkconf /etc/named.conf
+  changed_when: false
+
+# ── 9. 서비스 기동 ──
+- name: start named
+  service:
+    name: named
+    state: started
+    enabled: yes

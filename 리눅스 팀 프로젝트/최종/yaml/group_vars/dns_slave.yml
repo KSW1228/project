@@ -1,0 +1,3 @@
+---
+# dns_slave 그룹 전용 (슬레이브에서만 다른 값)
+dns_role: slave

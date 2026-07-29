@@ -1,0 +1,57 @@
+---
+# ===========================================================
+#  DNS 슬레이브 (web=24)
+#  - bind 설치 + 방화벽
+#  - named.conf 배포 (type slave, 마스터=185 를 바라봄)
+#  ★ 슬레이브는 존 파일을 직접 만들지 않는다.
+#    named 가 마스터에서 트랜스퍼(AXFR)로 받아 slaves/ 에 저장.
+#  ★ 멱등성: template 모듈은 멱등. 설정 바뀔 때만 재시작.
+# ===========================================================
+
+# ── 1. 패키지 설치 ──
+- name: install bind
+  dnf:
+    name:
+      - bind
+      - bind-utils
+    state: latest
+
+# ── 2. 방화벽 (dns=53 개방) ──
+- name: open firewall for dns
+  firewalld:
+    service: dns
+    permanent: yes
+    immediate: yes
+    state: enabled
+
+# ── 3. 슬레이브가 받은 존을 저장할 디렉터리 보장 ──
+#   /var/named/slaves 는 named 가 쓰기 가능해야 함
+- name: Ensure slaves directory exists
+  file:
+    path: /var/named/slaves
+    state: directory
+    owner: named
+    group: named
+    mode: '0770'
+
+# ── 4. named.conf 배포 (슬레이브용) ──
+- name: Deploy named.conf (slave)
+  template:
+    src: named.conf.slave.j2
+    dest: /etc/named.conf
+    owner: root
+    group: named
+    mode: '0640'
+  notify: restart named
+
+# ── 5. named.conf 문법 검사 ──
+- name: Check named.conf syntax
+  command: named-checkconf /etc/named.conf
+  changed_when: false
+
+# ── 6. 서비스 기동 ──
+- name: start named
+  service:
+    name: named
+    state: started
+    enabled: yes

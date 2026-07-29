@@ -1,0 +1,203 @@
+---
+# ===========================================================
+#  web 서버: httpd + php + WordPress "완전 자동" 설치
+#  ★ include_tasks 로 불리는 파일이므로 Play 헤더 없음
+#  ★ 브라우저 설치 마법사 없이 admin/1234 까지 자동 (WP-CLI 사용)
+#  ★ DB 는 db.ksw.io(20번)의 ksw_db 에 원격 접속
+#     (ksw_db / kswuser_db 는 db/db_install.yaml 에서 이미 생성)
+#  데이터 디렉터리(/var/www/html)는 common/raid_lvm 에서 RAID 로 마운트됨
+#  멱등성: stat / wp core is-installed 가드로 재실행 안전
+#
+#  [마법사 대응표]  roundcube 와 같은 철학으로 마법사를 코드로 대체
+#    마법사 1단계(DB 연결)      → wp config create  (wp-config.php 생성)
+#    마법사 2단계(사이트+계정)  → wp core install   (admin/1234 생성)
+# ===========================================================
+
+# ── 1. 웹/PHP 패키지 (+WP-CLI 실행용 php-cli, +unzip 으로 zip 해제) ──
+- name: install web/php packages
+  dnf:
+    name:
+      - httpd
+      - php
+      - php-fpm
+      - php-cli
+      - php-mysqlnd
+      - php-gd
+      - php-mbstring
+      - php-xml
+      - php-json
+      - php-intl
+      - unzip
+      - tar
+      - curl
+    state: present
+
+# ── 2. db.ksw.io 이름 해석 보장 (안전망) ──
+#   web 은 dns_slave 라 보통 자체 named 로 풀리지만, resolv.conf 상태와
+#   무관하게 wp core install 이 확실히 DB 에 붙도록 /etc/hosts 에도 박아둔다.
+- name: Ensure db host resolvable via /etc/hosts
+  lineinfile:
+    path: /etc/hosts
+    regexp: 'db\.ksw\.io'
+    line: "10.0.2.141 db.ksw.io"
+    state: present
+
+# ── 3. WordPress 내려받기 + 압축 해제 (멱등: 이미 있으면 skip) ──
+- name: Check if WordPress already extracted
+  stat:
+    path: "{{ wp_path }}/wp-load.php"
+  register: wp_dir
+
+- name: Download & extract WordPress
+  unarchive:
+    src: "{{ wp_download_url }}"
+    dest: /var/www/html
+    remote_src: yes
+  when: not wp_dir.stat.exists
+
+# ── 4. WP-CLI 설치 (마법사 자동화의 핵심 도구) ──
+- name: Check if WP-CLI installed
+  stat:
+    path: /usr/local/bin/wp
+  register: wpcli
+
+- name: Download WP-CLI
+  get_url:
+    url: https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar
+    dest: /usr/local/bin/wp
+    mode: '0755'
+  when: not wpcli.stat.exists
+
+# ── 5. wp-config.php 생성 (★ 마법사 1단계: DB 연결 화면 대체) ──
+#   wp config create 가 salt 키까지 자동 생성해 넣어줌 → 손으로 만질 것 없음
+#   --allow-root: root 로 실행 허용. 이미 있으면 skip(멱등).
+- name: Check wp-config.php
+  stat:
+    path: "{{ wp_path }}/wp-config.php"
+  register: wpconfig
+
+- name: Create wp-config.php (DB 연결 + salt 자동)
+  command: >
+    /usr/local/bin/wp config create
+    --path={{ wp_path }}
+    --dbname={{ wp_db_name }}
+    --dbuser={{ wp_db_user }}
+    --dbpass={{ wp_db_pass }}
+    --dbhost={{ wp_db_host }}
+    --dbprefix={{ wp_db_prefix }}
+    --locale=ko_KR
+    --allow-root
+  when: not wpconfig.stat.exists
+
+# ── 6. WordPress 코어 설치 (★ 마법사 2단계: 사이트+admin 계정 대체) ──
+#   여기서 DB 테이블이 깔리고 admin/1234 계정이 생성됨.
+#   wp core is-installed 로 이미 설치됐는지 검사 → 멱등.
+- name: Check if WordPress already installed
+  command: /usr/local/bin/wp core is-installed --path={{ wp_path }} --allow-root
+  register: wp_installed
+  failed_when: false
+  changed_when: false
+
+- name: Install WordPress (admin/1234, 설치 마법사 완전 대체)
+  command: >
+    /usr/local/bin/wp core install
+    --path={{ wp_path }}
+    --url={{ wp_url }}
+    --title="{{ wp_title }}"
+    --admin_user={{ wp_admin_user }}
+    --admin_password={{ wp_admin_pass }}
+    --admin_email={{ wp_admin_email }}
+    --skip-email
+    --allow-root
+  when: wp_installed.rc != 0
+
+# ── 7. 소유권 정리 (root 로 만든 파일 → apache) ──
+- name: chown WordPress to apache
+  file:
+    path: "{{ wp_path }}"
+    owner: apache
+    group: apache
+    recurse: yes
+
+# ── 8. httpd 디렉터리 권한만 부여 (DocumentRoot 는 기본 /var/www/html 유지) ──
+#   ★ DocumentRoot 를 wordpress 로 강제하지 않음.
+#     → www.ksw.io 루트엔 직접 만든 index.html 등을 둘 수 있고,
+#       워드프레스는 /wordpress/ 하위 경로로 접근.
+#   .htaccess(펄머링크)만 동작하도록 AllowOverride All 부여.
+- name: Allow .htaccess under web root (no DocumentRoot override)
+  copy:
+    dest: /etc/httpd/conf.d/wordpress.conf
+    content: |
+      <Directory "/var/www/html">
+          Options FollowSymLinks
+          AllowOverride All
+          Require all granted
+      </Directory>
+    owner: root
+    group: root
+    mode: '0644'
+
+# ── 8-1. 루트 랜딩 페이지(index.html) 배포 ──
+#   www.ksw.io 첫 화면 = 이 index.html. 이미지 클릭 시 워드프레스 로그인으로 이동.
+- name: Deploy landing index.html
+  copy:
+    dest: /var/www/html/index.html
+    content: |
+      <!DOCTYPE html>
+      <html lang="ko">
+      <head><meta charset="utf-8"><title>KSW</title></head>
+      <body style="text-align:center; margin-top:80px;">
+        <a href="/wordpress/wp-login.php">
+          <img src="/1.png" alt="enter" style="max-width:600px;">
+        </a>
+      </body>
+      </html>
+    owner: apache
+    group: apache
+    mode: '0644'
+
+# ── 8-2. 랜딩 이미지(1.png) 배포 ──
+#   ★ yaml/web/files/1.png 에 본인 이미지를 넣어두면 여기로 올라감.
+- name: Deploy landing image (1.png)
+  copy:
+    src: files/1.png
+    dest: /var/www/html/1.png
+    owner: apache
+    group: apache
+    mode: '0644'
+
+# ── 9. SELinux: httpd 가 원격 DB(db.ksw.io) 접속 + wp-content 쓰기 허용 ──
+#   ※ SELinux 가 켜진 호스트에서만 수행. 꺼져 있으면 두 task 모두 건너뜀.
+#      (꺼진 환경에선 boolean/label 자체가 의미 없어 시끄러운 에러만 나기 때문)
+- name: Allow httpd to connect to remote DB (SELinux)
+  ansible.posix.seboolean:
+    name: httpd_can_network_connect_db
+    state: yes
+    persistent: yes
+  when: ansible_selinux.status | default('disabled') == 'enabled'
+
+- name: Make wp-content writable for httpd (SELinux context)
+  command: chcon -R -t httpd_sys_rw_content_t "{{ wp_path }}/wp-content"
+  when: ansible_selinux.status | default('disabled') == 'enabled'
+
+# ── 10. 방화벽 (http/https) ──
+- name: open firewall for web
+  firewalld:
+    service: "{{ item }}"
+    permanent: yes
+    immediate: yes
+    state: enabled
+  loop:
+    - http
+    - https
+
+# ── 11. 서비스 (재)기동 ──
+#   Play 5-1 에는 handler 가 없어 여기서 직접 restarted 로 반영.
+- name: restart web services
+  service:
+    name: "{{ item }}"
+    state: restarted
+    enabled: yes
+  loop:
+    - php-fpm
+    - httpd

@@ -1,0 +1,31 @@
+---
+# ===========================================================
+#  mail_servers 공통 변수 (mail1 + mail2 둘 다 적용)
+#  - PDF: sendmail + dovecot + roundcube 풀세트
+# ===========================================================
+
+# 중앙 DNS (메일서버 resolv.conf 가 바라볼 곳)
+mail_dns_server: 10.0.2.25
+
+# RAID/LVM (선택) — mail 서버에 빈 디스크 sdb/sdc 있을 때만 raid 태그로 사용.
+#   PDF 실습엔 mail 서버 RAID 가 없으므로 기본은 생략.
+#   쓰려면 아래 주석 풀고 --tags raid 대상에 mail 추가.
+# md_name: /dev/md0
+# vg_name: vg_mail
+# lv_name: lv_mail
+# fs_type: xfs
+# mount_point: /var/spool/mail
+
+# Roundcube (웹메일)
+roundcube_version: "1.7.1"
+roundcube_url: "https://github.com/roundcube/roundcubemail/releases/download/1.7.1/roundcubemail-1.7.1-complete.tar.gz"
+
+# ── 라운드큐브 DB: 20번(db.ksw.io)에 통합 ──
+#   메일서버는 DB 를 직접 안 깔고, db.ksw.io 의 MariaDB 에 원격 접속.
+#   DB 이름은 서버별로 다름(mail1.yml/mail2.yml 의 roundcube_db_name).
+roundcube_db_host: db.ksw.io
+roundcube_db_user: rcuser
+roundcube_db_pass: "1234"
+
+# 메일서버끼리 RELAY 허용할 네트워크
+mail_relay_network: "10.0.2"

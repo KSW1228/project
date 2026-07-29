@@ -1,0 +1,40 @@
+# {{ ansible_managed }}
+# ===========================================================
+#  vsftpd.conf — Ansible(roles/ftp) 관리 파일, 직접 수정 금지
+#  IPA 계정 로그인 + 전원 /pub 공유(chroot). 변수: group_vars/ftp.
+# ===========================================================
+
+# ── 익명 차단, 로컬(IPA) 유저만 ──
+anonymous_enable=NO
+local_enable=YES
+write_enable=YES
+# 그룹 협업용: 파일 664 / 디렉터리 775 (그룹 쓰기 허용)
+local_umask=002
+
+# ── 로그인하면 전원 /pub 로 떨어지고 그 밖으로 못 나감 ──
+local_root={{ ftp_local_root }}
+chroot_local_user=YES
+allow_writeable_chroot=YES
+
+# ── 로깅 / 동작 ──
+dirmessage_enable=YES
+xferlog_enable=YES
+xferlog_std_format=YES
+connect_from_port_20=YES
+
+# ── 리스닝 (IPv4 단독) ──
+listen=YES
+listen_ipv6=NO
+
+# ── 패시브 모드 데이터 포트 (FileZilla 등 PASV 클라이언트용) ──
+#   이 범위를 방화벽에서도 같이 열어줘야 디렉터리 목록/전송이 됨.
+pasv_enable=YES
+pasv_min_port={{ ftp_pasv_min_port }}
+pasv_max_port={{ ftp_pasv_max_port }}
+
+# ── 인증/접근 (PAM→SSSD→IPA) ──
+pam_service_name=vsftpd
+userlist_enable=YES
+# RHEL/Rocky 8+ vsftpd 는 tcp_wrappers 없이 빌드됨 → YES 면 "500 OOPS" 로 연결 끊김.
+# 접근 제어는 firewalld(ftp_allowed_network)가 담당하므로 NO 로 둔다.
+tcp_wrappers=NO

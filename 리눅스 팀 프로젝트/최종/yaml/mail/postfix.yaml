@@ -1,0 +1,88 @@
+---
+# ===========================================================
+#  postfix 설치 + 설정 (Rocky 10 기본 MTA, sendmail 대체)
+#  - 송신/수신 MTA. 25번 포트.
+#  - sendmail 의 sendmail.cf/access/makemap 대신 main.cf 한 파일로 끝
+#  - 개념 매핑:
+#      sendmail Cw도메인        → postfix mydestination
+#      sendmail local-host-names → postfix myhostname/mydomain
+#      sendmail access RELAY     → postfix mynetworks
+#      sendmail Addr=127.0.0.1 제거 → postfix inet_interfaces = all
+# ===========================================================
+
+- name: Install postfix
+  dnf:
+    name: postfix
+    state: present
+
+# ── main.cf 핵심 설정 (postconf -e 와 동일, lineinfile 로 멱등) ──
+
+# myhostname: 이 서버의 메일 호스트 이름 (mail.ydy.io / mail.igh.io)
+- name: postfix myhostname
+  lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: '^#?\s*myhostname\s*='
+    line: "myhostname = {{ mail_hostname }}"
+  notify: restart postfix
+
+# mydomain: 메일 도메인 (ydy.io / igh.io)
+- name: postfix mydomain
+  lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: '^#?\s*mydomain\s*='
+    line: "mydomain = {{ mail_domain }}"
+  notify: restart postfix
+
+# myorigin: 보내는 메일의 도메인 (@ydy.io 로 나가게)
+- name: postfix myorigin
+  lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: '^#?\s*myorigin\s*='
+    line: "myorigin = $mydomain"
+  notify: restart postfix
+
+# inet_interfaces: 모든 인터페이스에서 듣기 (외부 통신) — sendmail Addr 제거에 해당
+- name: postfix inet_interfaces all
+  lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: '^#?\s*inet_interfaces\s*='
+    line: "inet_interfaces = all"
+  notify: restart postfix
+
+# inet_protocols: IPv4 만 (단순화)
+- name: postfix inet_protocols
+  lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: '^#?\s*inet_protocols\s*='
+    line: "inet_protocols = ipv4"
+  notify: restart postfix
+
+# mydestination: 이 서버가 "내 것"으로 받을 도메인 — sendmail Cw 에 해당
+- name: postfix mydestination
+  lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: '^#?\s*mydestination\s*='
+    line: "mydestination = $myhostname, localhost.$mydomain, localhost, $mydomain"
+  notify: restart postfix
+
+# mynetworks: RELAY 허용 네트워크 — sendmail access RELAY 에 해당
+- name: postfix mynetworks
+  lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: '^#?\s*mynetworks\s*='
+    line: "mynetworks = 127.0.0.0/8, {{ mail_relay_network }}.0/24"
+  notify: restart postfix
+
+# home_mailbox: 메일 저장 위치 (dovecot 의 mail_location 과 짝) — mbox 방식
+- name: postfix home_mailbox (mbox via /var/mail)
+  lineinfile:
+    path: /etc/postfix/main.cf
+    regexp: '^#?\s*mail_spool_directory\s*='
+    line: "mail_spool_directory = /var/mail"
+  notify: restart postfix
+
+- name: Enable & start postfix
+  service:
+    name: postfix
+    state: started
+    enabled: yes

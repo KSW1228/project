@@ -1,0 +1,20 @@
+---
+# ===========================================================
+#  메일서버 풀세트 설치 — 순서대로 include
+#  prep → sendmail → dovecot → users → roundcube
+# ===========================================================
+
+- name: "[mail] 사전 준비 (resolv.conf, 방화벽)"
+  include_tasks: prep.yaml
+
+- name: "[mail] postfix (송수신 MTA)"
+  include_tasks: postfix.yaml
+
+- name: "[mail] dovecot (수신 IMAP/POP3)"
+  include_tasks: dovecot.yaml
+
+- name: "[mail] 메일 계정 생성"
+  include_tasks: users.yaml
+
+- name: "[mail] Roundcube 웹메일"
+  include_tasks: roundcube.yaml

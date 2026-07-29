@@ -1,0 +1,121 @@
+---
+# ===========================================================
+#  Roundcube 웹메일 설치 (DB 는 20번 db.ksw.io 에 통합)
+#  - httpd + php + roundcube (mariadb-server 는 설치 안 함!)
+#  - DB: 원격 db.ksw.io 의 rc_ydy / rc_igh
+#  - sendmail(localhost:25) / dovecot(localhost:143) 에 붙음
+# ===========================================================
+
+# ── 1. 웹/PHP 패키지 + mysql 클라이언트(스키마 import 용) ──
+#   ※ mariadb-server 는 빼고 mariadb(클라이언트)만 — DB 는 20번이 담당
+- name: Install web/php packages for roundcube
+  dnf:
+    name:
+      - httpd
+      - php
+      - php-fpm
+      - php-mysqlnd
+      - php-gd
+      - php-mbstring
+      - php-xml
+      - php-json
+      - php-intl
+      - php-pdo
+      - mariadb          # 클라이언트만 (서버 아님) — 원격 스키마 import 용
+      - tar
+      - wget
+    state: present
+
+- name: Enable & start httpd
+  service:
+    name: httpd
+    state: started
+    enabled: yes
+
+# ── 2. Roundcube 다운로드 + 압축 해제 ──
+#   PDF: wget ... / tar xfz / ln -s roundcubemail-x.y.z rc
+- name: Check if roundcube already extracted
+  stat:
+    path: "/var/www/html/roundcubemail-{{ roundcube_version }}"
+  register: rc_dir
+
+- name: Download roundcube
+  get_url:
+    url: "{{ roundcube_url }}"
+    dest: "/tmp/roundcubemail-{{ roundcube_version }}-complete.tar.gz"
+  when: not rc_dir.stat.exists
+
+- name: Extract roundcube to /var/www/html
+  unarchive:
+    src: "/tmp/roundcubemail-{{ roundcube_version }}-complete.tar.gz"
+    dest: /var/www/html/
+    remote_src: yes
+  when: not rc_dir.stat.exists
+
+# ── 심볼릭 링크 rc → roundcubemail-x.y.z ──
+- name: Symlink rc -> roundcubemail-{{ roundcube_version }}
+  file:
+    src: "/var/www/html/roundcubemail-{{ roundcube_version }}"
+    dest: /var/www/html/rc
+    state: link
+
+- name: chown roundcube to apache
+  file:
+    path: "/var/www/html/roundcubemail-{{ roundcube_version }}"
+    owner: apache
+    group: apache
+    recurse: yes
+
+# ── 3. 스키마 적용 (DB 는 20번에 이미 생성됨, 여기선 원격 import) ──
+#   db.ksw.io 의 rc_ydy(또는 rc_igh) 에 테이블이 없으면 스키마 넣기
+- name: Check if roundcube schema already imported (remote db.ksw.io)
+  shell: >
+    mysql -h {{ roundcube_db_host }} -u {{ roundcube_db_user }} -p{{ roundcube_db_pass }}
+    -N -e "SHOW TABLES;" {{ roundcube_db_name }} | wc -l
+  register: rc_tables
+  changed_when: false
+
+- name: Import roundcube DB schema to remote db.ksw.io
+  shell: >
+    mysql -h {{ roundcube_db_host }} -u {{ roundcube_db_user }} -p{{ roundcube_db_pass }}
+    {{ roundcube_db_name }}
+    < /var/www/html/roundcubemail-{{ roundcube_version }}/SQL/mysql.initial.sql
+  args:
+    executable: /bin/bash
+  when: rc_tables.stdout | int == 0
+
+# ── 5. roundcube config (DB/SMTP/IMAP 연결) ──
+#   PDF 설치 마법사가 만드는 config.inc.php 를 직접 생성
+#   smtp=localhost:25 (sendmail), imap=localhost:143 (dovecot)
+- name: Generate roundcube config.inc.php
+  template:
+    src: config.inc.php.j2
+    dest: "/var/www/html/roundcubemail-{{ roundcube_version }}/config/config.inc.php"
+    owner: apache
+    group: apache
+    mode: '0640'
+
+# ── 6. httpd DocumentRoot 를 rc/public_html 로 (PDF 124/136/162행) ──
+- name: Set httpd DocumentRoot to roundcube public_html
+  copy:
+    dest: /etc/httpd/conf.d/roundcube.conf
+    content: |
+      DocumentRoot "/var/www/html/rc/public_html"
+      <Directory "/var/www/html/rc/public_html">
+          Options FollowSymLinks
+          AllowOverride All
+          Require all granted
+          FallbackResource /index.php
+      </Directory>
+    owner: root
+    group: root
+    mode: '0644'
+  notify: restart httpd
+
+# ── 7. SELinux: httpd 가 네트워크(메일/DB) 접속 허용 ──
+- name: Allow httpd network connect (SELinux)
+  ansible.posix.seboolean:
+    name: httpd_can_network_connect
+    state: yes
+    persistent: yes
+  ignore_errors: yes

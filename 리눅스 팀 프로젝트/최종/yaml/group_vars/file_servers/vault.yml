@@ -1,0 +1,5 @@
+---
+# ※ 원래는 ansible-vault 로 암호화해야 하는 파일.
+#   실습 편의상 평문으로 둠. 운영 시:
+#     ansible-vault encrypt group_vars/file_servers/vault.yml
+vault_samba_password: "1234"

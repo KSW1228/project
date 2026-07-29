@@ -1,0 +1,22 @@
+<?php
+/* Roundcube 설정 — Ansible 자동 생성 (PDF 설치 마법사 대체) */
+$config = [];
+
+// ── DB 연결 (20번 db.ksw.io 의 rc_ydy/rc_igh 에 원격 접속) ──
+$config['db_dsnw'] = 'mysql://{{ roundcube_db_user }}:{{ roundcube_db_pass }}@{{ roundcube_db_host }}/{{ roundcube_db_name }}';
+
+// ── IMAP (수신, dovecot) — localhost:143 ──
+$config['imap_host'] = 'localhost:143';
+
+// ── SMTP (송신, sendmail) — localhost:25 ──
+$config['smtp_host'] = 'localhost:25';
+$config['smtp_user'] = '';
+$config['smtp_pass'] = '';
+
+// ── 기타 ──
+$config['support_url'] = '';
+$config['product_name'] = '{{ mail_domain }} Webmail';
+$config['des_key'] = '{{ lookup("password", "/dev/null length=24 chars=ascii_letters,digits") }}';
+$config['plugins'] = ['archive', 'zipdownload'];
+$config['language'] = 'ko_KR';
+$config['enable_installer'] = false;

@@ -1,0 +1,16 @@
+---
+# ===========================================================
+#  메일 계정 생성 (PDF: useradd user1 / passwd)
+#  - mail_users 리스트(group_vars)를 돌면서 생성
+#  - 이 계정이 곧 메일 주소: <name>@<mail_domain>
+# ===========================================================
+
+- name: Create mail user accounts
+  user:
+    name: "{{ item.name }}"
+    password: "{{ item.password | password_hash('sha512') }}"
+    state: present
+    create_home: yes
+  loop: "{{ mail_users }}"
+  loop_control:
+    label: "{{ item.name }}@{{ mail_domain }}"

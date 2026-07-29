@@ -1,0 +1,54 @@
+---
+# ===========================================================
+#  DNS 공통 변수 (dns_master + dns_slave 양쪽이 함께 봄)
+# ===========================================================
+dns_master_ip: 10.0.2.25
+dns_slave_ip: 10.0.2.24
+net_prefix: 10.0.2
+reverse_zone: 2.0.10.in-addr.arpa
+
+# ── 외부 도메인 포워딩 대상 ──
+#   우리 존에 없는 이름(rockylinux.org 등)을 대신 물어볼 외부 DNS.
+#   첫 번째는 VMware NAT 게이트웨이(보통 .2), 백업으로 구글 공용 DNS.
+#   ※ 게이트웨이 IP 는 `ip route | grep default` 로 확인해서 맞출 것.
+dns_forwarders:
+  - 10.0.2.2
+  - 8.8.8.8
+
+# ===========================================================
+#  서비스 도메인별 존 (구성도 기준)
+#  - hostname(IPA용)은 전부 ksw.com (hosts 에서)
+#  - DNS 서비스 이름은 각자 이니셜 .io
+#      web → www.ksw.io   db → db.ksw.io
+#      dns → ns.jjs.io    nfs → nfs.jjs.io (IP 미정, 주석)
+#      mail1 → mail.ydy.io   mail2 → mail.igh.io
+#  - 메일서버 2대 통신: ydy.io ↔ igh.io 로 도메인이 갈려야 건너감
+# ===========================================================
+managed_domains:
+
+  # ── ksw.io : web, db ──
+  - name: ksw.io
+    records:
+      - { host: www, ip: 10.0.2.24 }    # web → www.ksw.io
+      - { host: db,  ip: 10.0.2.141 }   # db  → db.ksw.io
+
+  # ── jjs.io : dns, file, (nfs) ──
+  - name: jjs.io
+    records:
+      - { host: ns,   ip: 10.0.2.25 }   # dns  → ns.jjs.io
+      - { host: file, ip: 10.0.2.208 }  # file → file.jjs.io (Samba/NFS)
+      # nfs IP 정해지면 아래 주석 풀고 IP 채우기
+      # - { host: nfs, ip: 10.0.2.??? }   # nfs → nfs.jjs.io
+
+  # ── ydy.io : mail1 이 담당 (이 도메인 메일을 mail1 이 받음) ──
+  - name: ydy.io
+    records:
+      - { host: mail, ip: 10.0.2.29 }   # mail → mail.ydy.io (이제 29)
+      - { host: ftp,  ip: 10.0.2.114 }  # ftp  → ftp.ydy.io (vsftpd)
+    mx: mail.ydy.io                     # @ydy.io 메일 → 29
+
+  # ── igh.io : mail2 가 담당 (이 도메인 메일을 mail2 가 받음) ──
+  - name: igh.io
+    records:
+      - { host: mail, ip: 10.0.2.28 }   # mail → mail.igh.io (이제 28)
+    mx: mail.igh.io                     # @igh.io 메일 → 28

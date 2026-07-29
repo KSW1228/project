@@ -1,0 +1,41 @@
+---
+# ===========================================================
+#  메일서버 사전 준비 (PDF: hostnamectl, resolv.conf, 방화벽)
+# ===========================================================
+
+# ── hostname 설정 (IPA 용 hostname 은 이미 client_join 에서 *.ksw.com 으로 됨) ──
+#   PDF 의 hostnamectl set-hostname mail.ksw.com 에 해당하나,
+#   우리는 IPA hostname(mail1.ksw.com)을 유지. 메일 도메인은 sendmail 설정으로 처리.
+
+# ── resolv.conf: 중앙 DNS(40) 바라보게 ──
+#   메일서버가 mail.ydy.io / mail.igh.io 를 해석하려면 우리 DNS 를 봐야 함
+- name: Point resolv.conf to central DNS
+  copy:
+    dest: /etc/resolv.conf
+    content: |
+      # Ansible 관리 — 중앙 DNS(40) + 슬레이브(10) 이중화
+      nameserver {{ mail_dns_server }}
+      nameserver 10.0.2.24
+      search {{ mail_domain }}
+    owner: root
+    group: root
+    mode: '0644'
+
+# ── 방화벽: 메일 + 웹 서비스 개방 ──
+#   PDF: smtp,smtps,pop3,pop3s,imap,imaps + http
+- name: Open mail & web firewall services
+  firewalld:
+    service: "{{ item }}"
+    permanent: yes
+    immediate: yes
+    state: enabled
+  loop:
+    - smtp
+    - smtps
+    - pop3
+    - pop3s
+    - imap
+    - imaps
+    - http
+    - https
+  ignore_errors: yes

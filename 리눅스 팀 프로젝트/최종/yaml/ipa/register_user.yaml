@@ -1,0 +1,100 @@
+---
+# ===========================================================
+#  FreeIPA 유저 생성 + SSH 키 등록 + sudo (멱등성 가드 적용)
+#   - ssh-keygen: 키 파일이 이미 있으면 건너뜀 (test -f)
+#   - user-add  : 유저가 이미 있으면 건너뜀 (ipa user-show ||)
+#   - sudorule  : 규칙이 이미 있으면 추가 안 함 (|| 가드)
+# ===========================================================
+
+- name: SSH key generation per client (on IPA server)
+  shell: |
+    mkdir -p /root/ksw_keys
+    if [ -f /root/ksw_keys/{{ hostvars[item].username }}_ed25519 ]; then
+      echo "EXISTS"
+    else
+      ssh-keygen -t ed25519 -C '{{ hostvars[item].username }}@ksw.com' \
+        -f /root/ksw_keys/{{ hostvars[item].username }}_ed25519 -N ''
+      echo "CREATED"
+    fi
+  loop: "{{ groups['ipa_clients'] | default([]) }}"
+  register: keygen_result
+  changed_when: "'CREATED' in keygen_result.stdout"
+  args:
+    executable: /bin/bash
+
+- name: Public key read
+  slurp:
+    src: "/root/ksw_keys/{{ hostvars[item].username }}_ed25519.pub"
+  loop: "{{ groups['ipa_clients'] | default([]) }}"
+  register: ksw_pubkeys
+
+# ── IPA 전역 기본 로그인 셸을 /bin/bash 로 (신규 유저 nologin 방지) ──
+#   전역 기본값 자체가 nologin 이면 --shell 안 줬을 때 nologin 으로 생성됨.
+#   여기서 기본을 bash 로 박고, 아래 user-mod 에서 매 실행 강제 적용.
+- name: FreeIPA set default login shell to /bin/bash
+  shell: |
+    kinit admin <<< 'rocky123$'
+    ipa config-mod --defaultshell=/bin/bash || true
+    echo done
+  args:
+    executable: /bin/bash
+  run_once: true
+  changed_when: false
+
+- name: FreeIPA user add + SSH key + sudo(NOPASSWD:ALL)
+  shell: |
+    kinit admin <<< 'rocky123$'
+
+    if ipa user-show {{ hostvars[item.item].username }} >/dev/null 2>&1; then
+      USER_STATE="EXISTS"
+    else
+      printf "1234\n1234\n" | ipa user-add {{ hostvars[item.item].username }} \
+        --first={{ hostvars[item.item].first_name }} --last={{ hostvars[item.item].last_name }} \
+        --shell=/bin/bash --password
+      USER_STATE="CREATED"
+    fi
+
+    ipa user-mod {{ hostvars[item.item].username }} \
+      --sshpubkey="{{ item.content | b64decode | trim }}" --shell=/bin/bash || true
+
+    ipa sudorule-show {{ hostvars[item.item].username }}-sudo-rule >/dev/null 2>&1 || \
+      ipa sudorule-add {{ hostvars[item.item].username }}-sudo-rule --desc="sudo for {{ hostvars[item.item].username }}"
+
+    ipa sudorule-add-user {{ hostvars[item.item].username }}-sudo-rule --users={{ hostvars[item.item].username }} || true
+    ipa sudorule-mod {{ hostvars[item.item].username }}-sudo-rule --hostcat=all || true
+    ipa sudorule-mod {{ hostvars[item.item].username }}-sudo-rule --cmdcat=all || true
+    ipa sudorule-add-option {{ hostvars[item.item].username }}-sudo-rule --sudooption='!authenticate' || true
+
+    echo "STATE=$USER_STATE"
+  loop: "{{ ksw_pubkeys.results }}"
+  when: not (item.skipped | default(false))
+  register: user_result
+  changed_when: "'STATE=CREATED' in user_result.stdout"
+  args:
+    executable: /bin/bash
+
+- name: Fetch private keys to control node
+  fetch:
+    src: "/root/ksw_keys/{{ hostvars[item].username }}_ed25519"
+    dest: "/tmp/ksw_keys/"
+    flat: yes
+  loop: "{{ groups['ipa_clients'] | default([]) }}"
+
+# ── FTP /pub 공유용 IPA 그룹 + 멤버 (= ipa_clients 의 모든 유저) ──
+#   멱등: group-show 가드로 그룹은 한 번만 생성,
+#         group-add-member 는 이미 멤버면 무시(|| true).
+#   ipa_clients 에 서버가 추가되면 그 유저도 자동으로 공유그룹에 합류.
+- name: FreeIPA shared FTP group + members
+  shell: |
+    kinit admin <<< 'rocky123$'
+
+    ipa group-show {{ ftp_share_group }} >/dev/null 2>&1 || \
+      ipa group-add {{ ftp_share_group }} --desc="Shared FTP /pub access"
+
+    {% for h in groups['ipa_clients'] | default([]) %}
+    ipa group-add-member {{ ftp_share_group }} --users={{ hostvars[h].username }} || true
+    {% endfor %}
+    echo done
+  args:
+    executable: /bin/bash
+  changed_when: false

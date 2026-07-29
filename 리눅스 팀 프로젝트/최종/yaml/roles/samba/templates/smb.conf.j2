@@ -1,0 +1,27 @@
+[global]
+    log file = /var/log/samba/log.%m
+    logging = file
+    max log size = 1000
+
+    restrict anonymous = 2
+    security = USER
+    server role = standalone server
+    idmap config * : backend = tdb
+
+    hosts allow = 127.0.0.1 {{ samba_allowed_network }}
+    hosts deny = ALL
+
+    server smb encrypt = desired
+
+[{{ samba_share_name }}]
+    comment = {{ samba_share_comment }}
+    path = {{ samba_share_path }}
+
+    read only = No
+    valid users = @{{ samba_group }}
+    force group = {{ samba_group }}
+
+    create mask = 0660
+    force create mode = 0660
+    directory mask = 02770
+    force directory mode = 02770

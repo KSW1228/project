@@ -1,0 +1,144 @@
+---
+- name: Install Samba packages
+  ansible.builtin.dnf:
+    name: "{{ samba_package_list }}"
+    state: present
+
+- name: Create Samba access group
+  ansible.builtin.group:
+    name: "{{ samba_group }}"
+    state: present
+
+- name: Create Samba service account
+  ansible.builtin.user:
+    name: "{{ samba_user }}"
+    groups: "{{ samba_group }}"
+    append: true
+    create_home: false
+    shell: /sbin/nologin
+    password_lock: true
+    state: present
+
+- name: Create Samba parent directory
+  ansible.builtin.file:
+    path: /srv/samba
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create Samba shared directory
+  ansible.builtin.file:
+    path: "{{ samba_share_path }}"
+    state: directory
+    owner: root
+    group: "{{ samba_group }}"
+    mode: "2770"
+
+- name: Check whether Samba account exists
+  ansible.builtin.command:
+    argv:
+      - pdbedit
+      - -L
+      - -u
+      - "{{ samba_user }}"
+  register: samba_account_check
+  changed_when: false
+  failed_when: false
+
+- name: Register Samba account password
+  ansible.builtin.command:
+    argv:
+      - smbpasswd
+      - -s
+      - -a
+      - "{{ samba_user }}"
+    stdin: |
+      {{ vault_samba_password }}
+      {{ vault_samba_password }}
+  when: samba_account_check.rc != 0
+  no_log: true
+  changed_when: true
+
+- name: Enable Samba account
+  ansible.builtin.command:
+    argv:
+      - smbpasswd
+      - -e
+      - "{{ samba_user }}"
+  when: samba_account_check.rc != 0
+  changed_when: true
+
+- name: Deploy Samba configuration
+  ansible.builtin.template:
+    src: smb.conf.j2
+    dest: /etc/samba/smb.conf
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+    validate: "/usr/bin/testparm -s %s"
+  notify: Restart smb
+
+- name: Restore Samba SELinux file context
+  ansible.builtin.command:
+    cmd: restorecon -RF "{{ samba_share_path }}"
+  changed_when: false
+  when:
+    - ansible_selinux is defined
+    - ansible_selinux.status == "enabled"
+
+- name: Remove unrestricted Samba firewall service
+  ansible.posix.firewalld:
+    zone: "{{ firewall_zone }}"
+    service: samba
+    state: disabled
+    permanent: true
+    immediate: true
+
+- name: Allow Samba only from trusted network
+  ansible.posix.firewalld:
+    zone: "{{ firewall_zone }}"
+    rich_rule: >-
+      rule family="ipv4"
+      source address="{{ samba_allowed_network }}"
+      service name="samba"
+      accept
+    state: enabled
+    permanent: true
+    immediate: true
+
+- name: Enable and start Samba service
+  ansible.builtin.systemd_service:
+    name: smb
+    state: started
+    enabled: true
+
+- name: Apply Samba handlers
+  ansible.builtin.meta: flush_handlers
+
+- name: Validate Samba configuration
+  ansible.builtin.command:
+    argv:
+      - testparm
+      - -s
+  changed_when: false
+
+- name: Verify Samba service is active
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - smb
+  register: samba_service_status
+  changed_when: false
+  failed_when: samba_service_status.stdout.strip() != "active"
+
+- name: Verify Samba account
+  ansible.builtin.command:
+    argv:
+      - pdbedit
+      - -L
+      - -u
+      - "{{ samba_user }}"
+  changed_when: false

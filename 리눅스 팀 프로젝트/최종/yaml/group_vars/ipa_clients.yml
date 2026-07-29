@@ -1,0 +1,3 @@
+---
+# ipa_clients 그룹(web, db, dns...) 공통 변수
+ansible_python_interpreter: /usr/bin/python3

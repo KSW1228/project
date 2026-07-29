@@ -1,0 +1,24 @@
+$TTL 86400
+@   IN  SOA ns.{{ managed_domains[0].name }}. admin.{{ managed_domains[0].name }}. (
+        {{ ansible_date_time.epoch }}  ; Serial (실행 때마다 갱신)
+        3600        ; Refresh
+        1800        ; Retry
+        604800      ; Expire
+        86400 )     ; Minimum TTL
+;
+@       IN  NS  ns.{{ managed_domains[0].name }}.
+;
+; ===========================================================
+;  IP -> 이름 (PTR). 모든 도메인의 records 를 모아서 생성.
+;  같은 IP가 여러 도메인에 있으면 첫 번째 것만 PTR 로 등록(중복 방지).
+; ===========================================================
+{% set seen = [] %}
+{% for d in managed_domains %}
+{% for r in d.records %}
+{% if r.ip not in seen %}
+{% set last_octet = r.ip.split('.')[-1] %}
+{{ "%-4s" | format(last_octet) }} IN  PTR {{ r.host }}.{{ d.name }}.
+{% set _ = seen.append(r.ip) %}
+{% endif %}
+{% endfor %}
+{% endfor %}

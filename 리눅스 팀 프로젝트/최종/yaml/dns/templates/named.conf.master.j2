@@ -1,0 +1,55 @@
+//
+// named.conf  (MASTER)  -- Ansible 관리 파일, 직접 수정 금지
+//
+options {
+    listen-on port 53 { 127.0.0.1; {{ dns_master_ip }}; };
+    listen-on-v6 port 53 { ::1; };
+    directory       "/var/named";
+    allow-query     { localhost; {{ net_prefix }}.0/24; };
+    allow-transfer  { {{ dns_slave_ip }}; };
+    recursion yes;
+    // ── 외부 도메인 포워딩 ──
+    //   우리 존(ksw.io 등)에 없는 이름은 아래 외부 DNS 로 대신 물어봄.
+    //   (패키지 미러·인터넷 도메인 해석용)
+    forwarders { {% for fwd in dns_forwarders %}{{ fwd }}; {% endfor %}};
+    forward only;
+    dnssec-validation no;
+    pid-file "/run/named/named.pid";
+    session-keyfile "/run/named/session.key";
+};
+
+logging {
+    channel default_debug {
+        file "data/named.run";
+        severity dynamic;
+    };
+};
+
+zone "." IN {
+    type hint;
+    file "named.ca";
+};
+
+// ===========================================================
+//  정방향 존 — managed_domains 목록에서 자동 생성
+//  도메인을 dns_servers.yml 에 추가하면 여기 선언도 자동으로 늘어남
+// ===========================================================
+{% for d in managed_domains %}
+zone "{{ d.name }}" IN {
+    type master;
+    file "{{ d.name }}.zone";
+    allow-transfer { {{ dns_slave_ip }}; };
+    notify yes;
+};
+{% endfor %}
+
+// ── 역방향 존 (IP -> 이름) ──
+zone "{{ reverse_zone }}" IN {
+    type master;
+    file "{{ reverse_zone }}.zone";
+    allow-transfer { {{ dns_slave_ip }}; };
+    notify yes;
+};
+
+include "/etc/named.rfc1912.zones";
+include "/etc/named.root.key";

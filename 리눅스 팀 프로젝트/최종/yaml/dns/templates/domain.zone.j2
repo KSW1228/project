@@ -1,0 +1,29 @@
+$TTL 86400
+@   IN  SOA ns.{{ item.name }}. admin.{{ item.name }}. (
+        {{ ansible_date_time.epoch }}  ; Serial (실행 때마다 갱신)
+        3600        ; Refresh
+        1800        ; Retry
+        604800      ; Expire
+        86400 )     ; Minimum TTL
+;
+; ── 네임서버(NS) 레코드 ──
+;   NS 는 이 도메인의 네임서버 이름. 아래 ns A레코드로 IP 해석됨.
+@       IN  NS  ns.{{ item.name }}.
+;
+; ── 네임서버 자신의 A 레코드 (글루) — 모든 존에 자동 삽입 ──
+ns      IN  A   {{ dns_master_ip }}
+;
+{% if item.mx is defined %}
+; ── 메일 교환기(MX) — 이 도메인의 메일을 받을 서버 ──
+@       IN  MX  10 {{ item.mx }}.
+;
+{% endif %}
+; ===========================================================
+;  A 레코드 (이름 -> IP). dns_servers.yml 의 records 에서 자동 생성.
+;  ※ host 가 'ns' 면 위에서 이미 넣었으므로 건너뜀 (중복 방지)
+; ===========================================================
+{% for r in item.records %}
+{% if r.host != 'ns' %}
+{{ "%-7s" | format(r.host) }} IN  A   {{ r.ip }}
+{% endif %}
+{% endfor %}

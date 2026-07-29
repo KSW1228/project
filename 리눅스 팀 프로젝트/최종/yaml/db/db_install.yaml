@@ -1,0 +1,95 @@
+---
+# ===========================================================
+#  DB 서버(ServerB): MariaDB 설치 + 워드프레스용 DB/계정
+#  ★ include_tasks 로 불리는 파일이므로 Play 헤더 없음
+#  ★ community.mysql 없이 mysql -e 명령으로 처리
+#  ★ 멱등성: IF NOT EXISTS / 조건 가드로 재실행 안전
+#  데이터 디렉터리(/var/lib/mysql)는 common/raid_lvm 에서 이미 RAID로 마운트됨
+# ===========================================================
+
+# ── 1. 패키지 설치 ──
+- name: install mariadb-server
+  dnf:
+    name: mariadb-server
+    state: latest
+
+# ── 2. 서비스 기동 ──
+- name: start mariadb
+  service:
+    name: mariadb
+    state: started
+    enabled: yes
+
+# ── 2-1. 원격 접속 허용 (bind-address) ──
+#   기본은 localhost 만 듣는 경우가 있어, 메일서버(60/70)가 원격으로
+#   붙으려면 모든 인터페이스를 듣게 해야 함.
+- name: Allow MariaDB remote connections (bind-address)
+  lineinfile:
+    path: /etc/my.cnf.d/mariadb-server.cnf
+    insertafter: '^\[mysqld\]'
+    regexp: '^\s*bind-address\s*='
+    line: 'bind-address=0.0.0.0'
+  notify: restart mariadb
+
+# ── 3. root 비밀번호가 이미 설정됐는지 확인 (멱등성 기준) ──
+#   소켓 인증으로 비번 없이 접속되면 → 아직 비번 미설정 상태
+- name: Check if root password is already set
+  command: mysql -u root -e "SELECT 1;"
+  register: root_nopass
+  failed_when: false
+  changed_when: false
+
+# ── 4. mysql_secure_installation 대체 (최초 1회만) ──
+#   root_nopass.rc == 0 → 아직 비번 없음 → 보안 초기화 수행
+- name: Secure installation equivalent (set root pw, remove anon/test)
+  command: >
+    mysql -u root -e "
+    ALTER USER 'root'@'localhost' IDENTIFIED BY '1234';
+    DELETE FROM mysql.user WHERE User='';
+    DROP DATABASE IF EXISTS test;
+    DELETE FROM mysql.db WHERE Db='test' OR Db='test\\_%';
+    FLUSH PRIVILEGES;"
+  when: root_nopass.rc == 0
+
+# ── 5. 워드프레스용 DB 생성 (IF NOT EXISTS 로 멱등) ──
+- name: Create WordPress database
+  command: >
+    mysql -u root -p1234 -e "CREATE DATABASE IF NOT EXISTS ksw_db
+    CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+# ── 6. 워드프레스용 계정 생성 + 권한 (CREATE USER IF NOT EXISTS 로 멱등) ──
+- name: Create WordPress DB user and grant privileges
+  command: >
+    mysql -u root -p1234 -e "
+    CREATE USER IF NOT EXISTS 'kswuser_db'@'%' IDENTIFIED BY '1234';
+    GRANT ALL PRIVILEGES ON ksw_db.* TO 'kswuser_db'@'%';
+    FLUSH PRIVILEGES;"
+
+# ── 7. 방화벽 (mysql=3306 개방) ──
+- name: open firewall for mysql
+  firewalld:
+    service: mysql
+    permanent: yes
+    immediate: yes
+    state: enabled
+
+# ===========================================================
+#  라운드큐브용 DB (메일서버 60/70 이 원격으로 사용)
+#  - rc_ydy : mail1(ydy.io) 웹메일 데이터
+#  - rc_igh : mail2(igh.io) 웹메일 데이터
+#  - 메일서버가 따로라 DB도 분리(설정·주소록 충돌 방지)
+#  - '%' 로 원격 접속 허용 (메일서버에서 db.ksw.io 로 붙음)
+# ===========================================================
+- name: Create roundcube databases (rc_ydy, rc_igh)
+  command: >
+    mysql -u root -p1234 -e "
+    CREATE DATABASE IF NOT EXISTS rc_ydy CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+    CREATE DATABASE IF NOT EXISTS rc_igh CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+
+- name: Create roundcube DB user with remote access
+  command: >
+    mysql -u root -p1234 -e "
+    CREATE USER IF NOT EXISTS 'rcuser'@'%' IDENTIFIED BY '1234';
+    GRANT ALL PRIVILEGES ON rc_ydy.* TO 'rcuser'@'%';
+    GRANT ALL PRIVILEGES ON rc_igh.* TO 'rcuser'@'%';
+    FLUSH PRIVILEGES;"

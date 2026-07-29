@@ -1,0 +1,81 @@
+---
+# ===========================================================
+#  FreeIPA 서버 설치 (멱등성 가드 적용)
+# ===========================================================
+
+# ── hostname 고정 ──
+- name: Set server hostname (hostname module)
+  hostname:
+    name: ipa.ksw.com
+
+- name: Force write /etc/hostname
+  copy:
+    dest: /etc/hostname
+    content: "ipa.ksw.com\n"
+
+- name: Get current static hostname
+  command: hostnamectl --static
+  register: cur_hostname
+  changed_when: false
+
+- name: Set hostname via hostnamectl (only if different)
+  command: hostnamectl set-hostname ipa.ksw.com
+  when: cur_hostname.stdout | trim != "ipa.ksw.com"
+
+# ── /etc/hosts 정리 ──
+- name: Ensure clean /etc/hosts on IPA server
+  copy:
+    dest: /etc/hosts
+    content: |
+      127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+      ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+      10.0.2.218 ipa.ksw.com ipa
+
+# ── FQDN 검증 ──
+- name: Verify FQDN is now ipa.ksw.com
+  command: hostname -f
+  register: current_hostname
+  changed_when: false
+
+- name: Fail early if FQDN is wrong
+  fail:
+    msg: "FQDN is '{{ current_hostname.stdout }}', expected 'ipa.ksw.com'. /etc/hosts 또는 hostname 설정을 확인하세요."
+  when: current_hostname.stdout != "ipa.ksw.com"
+
+# ── IPA 서버 패키지 설치 ──
+- name: install ipa-server
+  dnf:
+    name: ipa-server
+    state: latest
+
+- name: check if already installed
+  stat:
+    path: /etc/ipa/default.conf
+  register: ipa_installed
+
+- name: FreeIPA install command
+  command: >
+    ipa-server-install
+    -r KSW.COM
+    -n ksw.com
+    --ds-password=rocky123$
+    --admin-password=rocky123$
+    --no-ntp
+    --no-host-dns
+    --unattended
+  when: not ipa_installed.stat.exists
+
+# ── 방화벽 (firewalld 모듈은 멱등) ──
+- name: firewall settings
+  firewalld:
+    service: "{{ item }}"
+    permanent: yes
+    state: enabled
+    immediate: yes
+  loop:
+    - freeipa-ldap
+    - freeipa-ldaps
+    - dns
+    - http
+    - https
+    - kerberos

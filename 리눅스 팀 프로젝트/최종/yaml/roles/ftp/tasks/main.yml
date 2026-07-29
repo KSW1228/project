@@ -1,0 +1,148 @@
+---
+# ===========================================================
+#  roles/ftp — vsftpd 로컬(IPA) 유저 FTP 서버 + 공유 /pub
+#  ★ anonymous 가 아니라 IPA 계정으로 로그인.
+#     - .114 가 IPA 클라이언트로 가입돼 있어야 함(client_join 먼저).
+#     - 로그인한 유저는 전원 /pub 에 chroot 되어 공유.
+#     - /pub 는 IPA 공유그룹(ftp_share_group) 소유 + setgid(2775).
+#  ★ 팀 role 스타일(samba/nfs): FQCN, template, 제한 방화벽, SELinux, 검증.
+# ===========================================================
+
+- name: Install vsftpd packages
+  ansible.builtin.dnf:
+    name: "{{ ftp_package_list }}"
+    state: present
+
+# ── IPA 공유그룹이 SSSD 로 해석될 때까지 대기 ──
+#   (client_join 직후 SSSD 캐시 워밍업 고려해 재시도)
+- name: Wait until IPA shared group is resolvable via SSSD
+  ansible.builtin.command:
+    cmd: "getent group {{ ftp_share_group }}"
+  register: ftp_group_lookup
+  changed_when: false
+  retries: 10
+  delay: 3
+  until: ftp_group_lookup.rc == 0
+
+# ── 공유 디렉터리 /pub ──
+#   root 소유 + 공유그룹, setgid(2770→여기선 2775): 새 파일/폴더가
+#   자동으로 공유그룹 소속이 되어 멤버끼리 서로 읽기·수정 가능.
+- name: Create shared /pub directory
+  ansible.builtin.file:
+    path: "{{ ftp_local_root }}"
+    state: directory
+    owner: root
+    group: "{{ ftp_share_group }}"
+    mode: "2775"
+
+- name: Deploy vsftpd configuration
+  ansible.builtin.template:
+    src: vsftpd.conf.j2
+    dest: /etc/vsftpd/vsftpd.conf
+    owner: root
+    group: root
+    mode: "0600"
+    backup: true
+  notify: Restart vsftpd
+
+# ── SELinux: 인증 유저가 홈 밖(/pub) 읽기·쓰기 허용 ──
+- name: Allow authenticated FTP full access (SELinux boolean)
+  ansible.posix.seboolean:
+    name: ftpd_full_access
+    state: true
+    persistent: true
+  when:
+    - ansible_selinux is defined
+    - ansible_selinux.status == "enabled"
+
+- name: Set SELinux context on /pub
+  ansible.builtin.command:
+    cmd: semanage fcontext -a -t public_content_rw_t "{{ ftp_local_root }}(/.*)?"
+  register: ftp_fcontext
+  changed_when: "'already defined' not in ftp_fcontext.stderr"
+  failed_when:
+    - ftp_fcontext.rc != 0
+    - "'already defined' not in ftp_fcontext.stderr"
+  when:
+    - ansible_selinux is defined
+    - ansible_selinux.status == "enabled"
+
+- name: Restore SELinux file context on /pub
+  ansible.builtin.command:
+    cmd: restorecon -RF "{{ ftp_local_root }}"
+  changed_when: false
+  when:
+    - ansible_selinux is defined
+    - ansible_selinux.status == "enabled"
+
+# ── 방화벽: 무제한 ftp 서비스 제거 + 신뢰 네트워크에서만 허용 ──
+- name: Remove unrestricted FTP firewall service
+  ansible.posix.firewalld:
+    zone: "{{ firewall_zone }}"
+    service: ftp
+    state: disabled
+    permanent: true
+    immediate: true
+
+- name: Allow FTP only from trusted network
+  ansible.posix.firewalld:
+    zone: "{{ firewall_zone }}"
+    rich_rule: >-
+      rule family="ipv4"
+      source address="{{ ftp_allowed_network }}"
+      service name="ftp"
+      accept
+    state: enabled
+    permanent: true
+    immediate: true
+
+# ── 패시브 데이터 포트도 같은 신뢰 네트워크에서만 허용 ──
+#   (이게 없으면 로그인은 되는데 디렉터리 목록/전송이 막혀 빈 화면으로 보임)
+- name: Allow FTP passive ports from trusted network
+  ansible.posix.firewalld:
+    zone: "{{ firewall_zone }}"
+    rich_rule: >-
+      rule family="ipv4"
+      source address="{{ ftp_allowed_network }}"
+      port port="{{ ftp_pasv_min_port }}-{{ ftp_pasv_max_port }}" protocol="tcp"
+      accept
+    state: enabled
+    permanent: true
+    immediate: true
+
+- name: Enable and start vsftpd service
+  ansible.builtin.systemd_service:
+    name: vsftpd
+    state: started
+    enabled: true
+
+- name: Apply vsftpd handlers
+  ansible.builtin.meta: flush_handlers
+
+# ── 검증 ──
+- name: Verify vsftpd service is active
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - vsftpd
+  register: ftp_service_status
+  changed_when: false
+  failed_when: ftp_service_status.stdout.strip() != "active"
+
+- name: Verify vsftpd service is enabled
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - vsftpd
+  register: ftp_enabled_status
+  changed_when: false
+  failed_when: ftp_enabled_status.stdout.strip() != "enabled"
+
+- name: Verify local-mode config applied (anonymous off, /pub root)
+  ansible.builtin.command:
+    cmd: grep -E '^(anonymous_enable=NO|local_root={{ ftp_local_root }})$' /etc/vsftpd/vsftpd.conf
+  register: ftp_conf_check
+  changed_when: false
+  failed_when: ftp_conf_check.stdout_lines | length < 2

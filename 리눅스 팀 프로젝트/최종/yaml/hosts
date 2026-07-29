@@ -1,0 +1,66 @@
+# ===========================================================
+#  인벤토리 (호스트 목록만! 변수는 group_vars/ 로 분리됨)
+#  - 변수는 group_vars/<그룹이름>.yml 파일에서 관리
+#  ※ 지금은 mail 을 돌리지 않으므로 mail 관련 줄 전부 주석 처리함.
+#    (mail1/mail2 블록 + :children 참조까지 모두 빼야 파싱 에러 안 남)
+# ===========================================================
+
+[ipa]
+10.0.2.218 hostname=ipa.ksw.com
+
+[web]
+10.0.2.24   hostname=web.ksw.com  username=web  first_name=Seungwoo  last_name=Kim
+
+[db]
+10.0.2.141  hostname=db.ksw.com   username=db   first_name=Seungwoo  last_name=Kim
+
+[dns]
+10.0.2.25  hostname=dns.ksw.com  username=dns  first_name=Jangsu  last_name=Jeong
+
+# ── 파일서버 (Samba + NFS) — 팀원 role 연동 ──
+[file_servers]
+10.0.2.208  hostname=file.ksw.com  username=file  first_name=File  last_name=Server
+
+# ── FTP 서버 (vsftpd, anonymous) — roles/ftp ──
+#   DNS 의 ftp.ydy.io 가 가리키는 호스트와 동일해야 이름 접속 가능.
+[ftp]
+10.0.2.114  hostname=ftp.ksw.com  username=ftp  first_name=Ftp  last_name=Server
+
+#[mail1]
+#10.0.2.28   hostname=mail1.ksw.com username=mail1  first_name=Dongyeon   last_name=Yang
+
+#[mail2]
+#10.0.2.29   hostname=mail2.ksw.com username=mail2  first_name=Geonhyoeng last_name=Im
+
+# ── mail1 + mail2 를 묶는 상위 그룹 (공통 mail task 용) ──
+#[mail_servers:children]
+#mail1
+#mail2
+
+# ── IPA 클라이언트로 가입할 서버들 ──
+[ipa_clients:children]
+web
+db
+dns
+file_servers
+ftp
+#mail1
+#mail2
+
+# ===========================================================
+#  DNS 역할 그룹 (마스터/슬레이브 분리)
+#  - dns_master: 존 파일을 직접 소유하는 주인 (25)
+#  - dns_slave : 마스터에서 존을 받아오는 보조본 (web=24 에 고정)
+# ===========================================================
+[dns_master]
+10.0.2.25
+
+[dns_slave]
+10.0.2.24
+
+# ── dns_master + dns_slave 를 묶는 상위 그룹 ──
+#   공통 DNS 변수(domain, master_ip 등)를 group_vars/dns_servers.yml
+#   한 곳에만 적기 위한 부모 그룹. 중복 제거용.
+[dns_servers:children]
+dns_master
+dns_slave

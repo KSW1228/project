@@ -1,0 +1,138 @@
+---
+# ===========================================================
+#  클라이언트 IPA 가입 + 개인키 배포 + 보안 설정
+#  ★ 멱등성 핵심:
+#    - sssd 캐시 삭제는 "최초 가입할 때만" 실행 (기존 SSO 보호)
+#    - sshd 재시작은 "설정이 실제로 바뀔 때만" 실행
+#    - hostnamectl은 "현재 이름과 다를 때만" 실행
+#    → 전체를 다시 돌려도 어렵게 잡은 SSO를 흔들지 않음
+# ===========================================================
+
+# ── hostname (다를 때만) ──
+- name: Get current static hostname
+  command: hostnamectl --static
+  register: cur_client_hostname
+  changed_when: false
+
+- name: client hostname change (only if different)
+  command: "hostnamectl set-hostname {{ hostname }}"
+  when: cur_client_hostname.stdout | trim != hostname
+
+# ── /etc/hosts ──
+- name: Configure /etc/hosts on client
+  copy:
+    dest: /etc/hosts
+    content: |
+      127.0.0.1   localhost localhost.localdomain localhost4 localhost4.localdomain4
+      ::1         localhost localhost.localdomain localhost6 localhost6.localdomain6
+      10.0.2.218 ipa.ksw.com ipa
+      {{ inventory_hostname }} {{ hostname }}
+
+# ── ipa-client 패키지 ──
+- name: install ipa-client package
+  dnf:
+    name: ipa-client
+    state: latest
+    update_cache: yes
+
+# ── 가입 여부 확인 (이후 가드의 기준) ──
+- name: check if already joined to IPA
+  stat:
+    path: /etc/ipa/default.conf
+  register: client_ipa_joined
+
+- name: FreeIPA Client install execution
+  command: >
+    ipa-client-install
+    --mkhomedir
+    --no-ntp
+    --server=ipa.ksw.com
+    --domain=ksw.com
+    --realm=KSW.COM
+    -p admin
+    -w rocky123$
+    --force-join
+    --unattended
+  when: not client_ipa_joined.stat.exists
+
+# ── 개인키 배포 (copy 모듈은 멱등) ──
+- name: user .ssh directory make
+  file:
+    path: "/home/{{ username }}/.ssh"
+    state: directory
+    owner: "{{ username }}"
+    group: "{{ username }}"
+    mode: '0700'
+
+- name: copy private key to user home
+  copy:
+    src: "/tmp/ksw_keys/{{ username }}_ed25519"
+    dest: "/home/{{ username }}/.ssh/id_ed25519"
+    owner: "{{ username }}"
+    group: "{{ username }}"
+    mode: '0600'
+
+# ── SSH 하드닝 (변경 시 재시작 트리거) ──
+- name: SSH drop-in directory
+  file:
+    path: /etc/ssh/sshd_config.d
+    state: directory
+    owner: root
+    group: root
+    mode: '0755'
+
+- name: sshd_config Include line
+  lineinfile:
+    path: /etc/ssh/sshd_config
+    line: 'Include /etc/ssh/sshd_config.d/*.conf'
+    insertbefore: BOF
+    firstmatch: yes
+    state: present
+  register: sshd_include
+
+- name: SSH hardening (drop-in)
+  copy:
+    dest: /etc/ssh/sshd_config.d/00-ksw-hardening.conf
+    content: |
+      PermitRootLogin prohibit-password
+      PasswordAuthentication no
+      PubkeyAuthentication yes
+    owner: root
+    group: root
+    mode: '0600'
+  register: sshd_hardening
+
+# ── sudo via sssd (authselect는 재실행해도 안전하나 changed 정리) ──
+- name: check sudo feature in authselect
+  command: authselect current
+  register: authselect_cur
+  changed_when: false
+  failed_when: false
+
+- name: enable sudo via sssd (only if not enabled)
+  command: authselect enable-feature with-sudo
+  when: "'with-sudo' not in authselect_cur.stdout"
+
+# ── ★ SSSD 캐시 초기화: 최초 가입할 때만! (기존 SSO 보호) ──
+- name: SSSD reset and restart (first join only)
+  shell: |
+    systemctl stop sssd
+    rm -f /var/lib/sss/db/*
+    systemctl start sssd
+  args:
+    executable: /bin/bash
+  when: not client_ipa_joined.stat.exists
+
+# ── su 제한 (pam_wheel) ──
+- name: su block (pam_wheel)
+  lineinfile:
+    path: /etc/pam.d/su
+    regexp: '^#?auth\s+required\s+pam_wheel\.so\s+use_uid'
+    line: 'auth        required    pam_wheel.so use_uid'
+
+# ── ★ sshd 재시작: 설정이 실제로 바뀐 경우에만 ──
+- name: Restart sshd only if its config changed
+  service:
+    name: sshd
+    state: restarted
+  when: sshd_include.changed or sshd_hardening.changed

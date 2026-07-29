@@ -1,0 +1,130 @@
+---
+- name: Install NFS packages
+  ansible.builtin.dnf:
+    name: "{{ nfs_package_list }}"
+    state: present
+
+- name: Create NFS access group
+  ansible.builtin.group:
+    name: "{{ nfs_group }}"
+    gid: "{{ nfs_gid }}"
+    state: present
+
+- name: Create NFS squash account
+  ansible.builtin.user:
+    name: "{{ nfs_user }}"
+    uid: "{{ nfs_uid }}"
+    group: "{{ nfs_group }}"
+    create_home: false
+    shell: /sbin/nologin
+    password_lock: true
+    state: present
+
+- name: Create NFS parent directory
+  ansible.builtin.file:
+    path: /srv/nfs
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create NFS shared directory
+  ansible.builtin.file:
+    path: "{{ nfs_share_path }}"
+    state: directory
+    owner: "{{ nfs_user }}"
+    group: "{{ nfs_group }}"
+    mode: "2770"
+
+- name: Ensure exports configuration directory exists
+  ansible.builtin.file:
+    path: /etc/exports.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Deploy NFS export configuration
+  ansible.builtin.template:
+    src: teamshare.exports.j2
+    dest: /etc/exports.d/teamshare.exports
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+  notify: Reload NFS exports
+
+- name: Enable and start NFS server
+  ansible.builtin.systemd_service:
+    name: nfs-server
+    state: started
+    enabled: true
+
+- name: Allow NFS services (nfs + rpc-bind + mountd) from trusted network
+  ansible.posix.firewalld:
+    zone: "{{ firewall_zone }}"
+    rich_rule: >-
+      rule family="ipv4"
+      source address="{{ nfs_allowed_network }}"
+      service name="{{ item }}"
+      accept
+    state: enabled
+    permanent: true
+    immediate: true
+  loop:
+    - nfs        # NFSv4 (2049)
+    - rpc-bind   # portmapper (111) — showmount / NFSv3
+    - mountd     # mount 데몬 — showmount / NFSv3
+
+- name: Ensure rpcbind is running (for showmount / NFSv3)
+  ansible.builtin.systemd_service:
+    name: rpcbind
+    state: started
+    enabled: true
+
+- name: Remove unrestricted NFS firewall service
+  ansible.posix.firewalld:
+    zone: "{{ firewall_zone }}"
+    service: nfs
+    state: disabled
+    permanent: true
+    immediate: true
+
+- name: Apply NFS export handler
+  ansible.builtin.meta: flush_handlers
+
+- name: Verify NFS service is active
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - nfs-server
+  register: nfs_service_status
+  changed_when: false
+  failed_when: nfs_service_status.stdout.strip() != "active"
+
+- name: Verify NFS service is enabled
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-enabled
+      - nfs-server
+  register: nfs_enabled_status
+  changed_when: false
+  failed_when: nfs_enabled_status.stdout.strip() != "enabled"
+
+- name: Display active NFS exports
+  ansible.builtin.command:
+    argv:
+      - exportfs
+      - -v
+  register: nfs_exports
+  changed_when: false
+
+- name: Verify teamshare export exists
+  ansible.builtin.assert:
+    that:
+      - nfs_share_path in nfs_exports.stdout
+      - nfs_allowed_network in nfs_exports.stdout
+    fail_msg: "NFS teamshare Export 설정이 적용되지 않았습니다."
+    success_msg: "NFS teamshare Export 설정이 정상 적용되었습니다."

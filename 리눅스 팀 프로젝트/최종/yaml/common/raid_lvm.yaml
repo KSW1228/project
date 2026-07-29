@@ -1,0 +1,110 @@
+---
+# ===========================================================
+#  공용 RAID1 + LVM (web/db 그룹 변수로 분기)
+#  필요한 그룹 변수: md_name, vg_name, lv_name, mount_point
+#  ※ OS 디스크는 sda 이므로 RAID 대상은 sdb, sdc
+#  ★ 멱등성:
+#    - RAID가 이미 있으면(=우리가 만든 것) 안전장치 검사를 건너뜀
+#    - RAID/mdadm.conf/dracut은 배열이 없을 때만 실행
+#    - LVM/포맷/마운트는 모듈 자체가 멱등 → 재실행 안전
+# ===========================================================
+
+# ── 사전: mdadm / lvm2 패키지 설치 (없으면 RAID 못 만듦) ──
+- name: Ensure mdadm and lvm2 are installed
+  dnf:
+    name:
+      - mdadm
+      - lvm2
+    state: present
+
+# ── 0. RAID 장치가 이미 있는지 먼저 확인 (이후 모든 가드의 기준) ──
+- name: Check if RAID device already exists
+  stat:
+    path: "/dev/{{ md_name }}"
+  register: md_stat
+
+# ── 0-1. 안전장치: RAID가 아직 없을 때만 디스크 사용 여부 검사 ──
+#   (이미 md0이 있으면 그건 우리가 만든 것이므로 검사 불필요)
+- name: Check target disks are not mounted
+  shell: "lsblk -no MOUNTPOINT /dev/sdb /dev/sdc | grep -v '^$' || true"
+  register: disk_in_use
+  changed_when: false
+  when: not md_stat.stat.exists
+
+- name: Abort if target disks are in use
+  fail:
+    msg: "대상 디스크(sdb/sdc)에 마운트가 있습니다. 디스크 지정을 확인하세요."
+  when:
+    - not md_stat.stat.exists
+    - disk_in_use.stdout | default('') | trim | length > 0
+
+# ── 1. RAID1 생성 (배열이 없을 때만) ──
+- name: Create RAID1 array from sdb + sdc
+  command: >
+    mdadm --create /dev/{{ md_name }} --level=1 --raid-devices=2
+    --metadata=1.2 /dev/sdb /dev/sdc --run
+  when: not md_stat.stat.exists
+
+- name: Wait until RAID array is active
+  command: "mdadm --detail /dev/{{ md_name }}"
+  register: md_detail
+  until: "'active' in md_detail.stdout or 'clean' in md_detail.stdout"
+  retries: 30
+  delay: 5
+  changed_when: false
+  when: not md_stat.stat.exists
+
+# ── 2. mdadm.conf 영구화 (배열 신규 생성 시에만, 중복 방지) ──
+- name: Persist RAID config to mdadm.conf
+  shell: "mdadm --detail --scan | grep '/dev/{{ md_name }}' >> /etc/mdadm.conf"
+  args:
+    executable: /bin/bash
+  changed_when: true
+  when: not md_stat.stat.exists
+
+- name: Rebuild initramfs so RAID assembles at boot
+  command: dracut -f
+  when: not md_stat.stat.exists
+
+# ── 3. LVM (모듈이 멱등) ──
+- name: Create volume group on RAID device
+  community.general.lvg:
+    vg: "{{ vg_name }}"
+    pvs: "/dev/{{ md_name }}"
+    state: present
+
+- name: Create logical volume (100% of VG)
+  community.general.lvol:
+    vg: "{{ vg_name }}"
+    lv: "{{ lv_name }}"
+    size: 100%FREE
+    state: present
+    resizefs: false
+    shrink: false
+
+# ── 4. 파일시스템 (이미 xfs면 재포맷 안 함) ──
+- name: Create xfs filesystem
+  community.general.filesystem:
+    fstype: xfs
+    dev: "/dev/{{ vg_name }}/{{ lv_name }}"
+
+# ── 5. UUID 읽기 ──
+- name: Get UUID of logical volume
+  command: "blkid -s UUID -o value /dev/{{ vg_name }}/{{ lv_name }}"
+  register: lv_uuid
+  changed_when: false
+
+# ── 6. 디렉터리 + fstab(UUID) 마운트 (mount 모듈이 멱등) ──
+- name: Ensure mount point directory exists
+  file:
+    path: "{{ mount_point }}"
+    state: directory
+    mode: '0755'
+
+- name: Mount by UUID and write fstab
+  ansible.posix.mount:
+    path: "{{ mount_point }}"
+    src: "UUID={{ lv_uuid.stdout }}"
+    fstype: xfs
+    opts: defaults
+    state: mounted

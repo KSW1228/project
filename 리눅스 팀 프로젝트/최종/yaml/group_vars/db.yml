@@ -1,0 +1,11 @@
+---
+# db 그룹 전용 변수
+# ※ db 서버(el8)는 firewalld/dnf 모듈 바인딩이 보장된 플랫폼 파이썬(3.6) 사용
+#    (alternatives 로 흔들리는 /usr/bin/python3 대신 고정 경로)
+ansible_python_interpreter: /usr/libexec/platform-python
+
+# RAID1 + LVM 변수 (common/raid_lvm.yaml 이 사용)
+md_name: md1
+vg_name: vg_db
+lv_name: lv_mysql
+mount_point: /var/lib/mysql

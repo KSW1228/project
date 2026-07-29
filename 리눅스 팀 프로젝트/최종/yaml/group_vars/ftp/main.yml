@@ -1,0 +1,25 @@
+---
+# ===========================================================
+#  ftp (10.0.2.114) — vsftpd (IPA 유저 + 공유 /pub) 변수
+#  ★ roles/ftp 가 사용. samba/nfs 와 같은 변수 컨벤션.
+#  ★ ftp_share_group 은 group_vars/all.yml 에 정의(IPA 서버와 공유).
+# ===========================================================
+
+# ── 파이썬 인터프리터 (el8: firewalld/dnf 바인딩 보장된 플랫폼 파이썬) ──
+#   ※ 114 가 Rocky 9/10 이면 /usr/bin/python3 로 바꿀 것
+ansible_python_interpreter: /usr/libexec/platform-python
+
+# ── 방화벽 (rich_rule 에 사용) ──
+firewall_zone: public
+ftp_allowed_network: "10.0.2.0/24"
+
+# ── 패시브 모드 데이터 포트 범위 (template + 방화벽 task 가 공유) ──
+ftp_pasv_min_port: 40000
+ftp_pasv_max_port: 40100
+
+# ── 패키지 ──
+ftp_package_list:
+  - vsftpd
+
+# ── 공유 폴더 (로그인 시 전원 여기로 chroot) ──
+ftp_local_root: /pub

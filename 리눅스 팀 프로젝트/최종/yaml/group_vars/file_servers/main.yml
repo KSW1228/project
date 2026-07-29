@@ -1,0 +1,41 @@
+---
+# ===========================================================
+#  file_servers (10.0.2.208) — Samba + NFS 변수
+#  ★ 팀원 role 코드가 쓰는 변수 + 우리 프로젝트에 맞춘 공통 변수
+# ===========================================================
+
+# ── 파이썬 인터프리터 (el8: firewalld/dnf 바인딩 보장된 플랫폼 파이썬) ──
+#   ※ 208 이 Rocky 9/10 이면 /usr/bin/python3 로 바꿀 것
+ansible_python_interpreter: /usr/libexec/platform-python
+
+# ── 방화벽 (samba/nfs role 이 rich_rule 에 사용) ──
+firewall_zone: public
+trusted_network: "10.0.2.0/24"
+
+# ── Samba ──
+samba_package_list:
+  - samba
+  - samba-common-tools
+
+samba_group: "sambausers"
+samba_user: "samba01"
+
+samba_share_name: "teamshare"
+samba_share_comment: "Team File Share"
+samba_share_path: "/srv/samba/teamshare"
+samba_allowed_network: "10.0.2.0/24"
+
+# ── NFS ──
+nfs_package_list:
+  - nfs-utils
+
+nfs_group: "nfsshare"
+nfs_user: "nfsshare"
+nfs_uid: 1006
+nfs_gid: 1007
+
+nfs_share_path: "/srv/nfs/teamshare"
+nfs_allowed_network: "10.0.2.0/24"
+
+nfs_export_options: >-
+  rw,sync,all_squash,anonuid=1006,anongid=1007,no_subtree_check

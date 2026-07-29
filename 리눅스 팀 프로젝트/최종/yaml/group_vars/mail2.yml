@@ -1,0 +1,12 @@
+---
+# ===========================================================
+#  mail2 (10.0.2.29) — igh.io 메일 도메인 담당
+# ===========================================================
+mail_domain: igh.io                 # 이 서버가 받는 메일 도메인 (@igh.io)
+mail_hostname: mail.igh.io           # DNS 서비스 이름 (MX 가 가리키는 이름)
+roundcube_db_name: rc_igh            # 20번 db.ksw.io 의 mail2 전용 DB
+
+# 이 서버에 만들 메일 계정 (메일 주소 = 이름@igh.io)
+mail_users:
+  - { name: jjs, password: "1234" }    # → jjs@igh.io
+  - { name: igh, password: "1234" }    # → igh@igh.io
